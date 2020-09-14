@@ -11,12 +11,9 @@ weight: 10
 
 <!-- overview -->
 
-On-disk files in a Container are ephemeral, which presents some problems for
-non-trivial applications when running in Containers.  First, when a Container
-crashes, kubelet will restart it, but the files will be lost - the
-Container starts with a clean state.  Second, when running Containers together
-in a `Pod` it is often necessary to share files between those Containers.  The
-Kubernetes `Volume` abstraction solves both of these problems.
+The Kubernetes `Volume` abstraction (1) facilitates sharing files between 
+containers on the same `Pod`, and (2) allows files to persist when a container 
+is restarted. 
 
 Familiarity with [Pods](/docs/concepts/workloads/pods/pod/) is suggested.
 
@@ -24,58 +21,71 @@ Familiarity with [Pods](/docs/concepts/workloads/pods/pod/) is suggested.
 
 ## Background
 
-Docker also has a concept of
-[volumes](https://docs.docker.com/storage/), though it is
-somewhat looser and less managed.  In Docker, a volume is simply a directory on
-disk or in another Container.  Lifetimes are not managed and until very
-recently there were only local-disk-backed volumes.  Docker now provides volume
-drivers, but the functionality is very limited for now (e.g. as of Docker 1.7
-only one volume driver is allowed per Container and there is no way to pass
-parameters to volumes).
+Files stored within a filesystem of a container are temporary. When a container 
+is restarted, it returns back to the state of the base image. 
 
-A Kubernetes volume, on the other hand, has an explicit lifetime - the same as
-the Pod that encloses it.  Consequently, a volume outlives any Containers that run
-within the Pod, and data is preserved across Container restarts. Of course, when a
-Pod ceases to exist, the volume will cease to exist, too.  Perhaps more
-importantly than this, Kubernetes supports many types of volumes, and a Pod can
-use any number of them simultaneously.
+A Kubernetes volume is tied to the pod that encloses it. The pod maintains the 
+volume as different containers are started or stopped. 
 
 At its core, a volume is just a directory, possibly with some data in it, which
 is accessible to the Containers in a Pod.  How that directory comes to be, the
 medium that backs it, and the contents of it are determined by the particular
 volume type used.
 
-To use a volume, a Pod specifies what volumes to provide for the Pod (the
+Kubernetes supports a variety of different volume types, such as host directories
+and NFS mounts. Kubernetes also supports advanced file systems such as gluster. 
+
+A kubernetes pod may be connected to multiple volumes of varying types. 
+
+First, Specify a `Pod` that will provide the volume. 
+To use a volume, a `Pod` specifies what volumes to provide for the Pod (the
 `.spec.volumes`
-field) and where to mount those into Containers (the
+field) 
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sample-cache-pod
+spec:
+  volumes:
+    - name: cache-volume
+      emptyDir: {}
+```
+
+Second, Specify a mount point between a volume on the pod and the container (the
 `.spec.containers[*].volumeMounts`
-field).
+field). Volumes can not mount into other volumes, or have hard links to
+other volumes. Each Container in the Pod must independently specify where to
+mount each volume. 
 
-A process in a container sees a filesystem view composed from their Docker
-image and volumes.  The [Docker
-image](https://docs.docker.com/userguide/dockerimages/) is at the root of the
-filesystem hierarchy, and any volumes are mounted at the specified paths within
-the image.  Volumes can not mount onto other volumes or have hard links to
-other volumes.  Each Container in the Pod must independently specify where to
-mount each volume.
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sample-cache-pod
+spec:
+  volumes:
+    [...]
+  containers:
+    - name: test
+      image: busybox
+      volumeMounts:
+        - name: cache-volume
+          mountPath: /etc/config
 
-## Types of Volumes
+```
 
-Kubernetes supports several types of Volumes:
+## Core Volume Types
 
-   * [awsElasticBlockStore](#awselasticblockstore)
-   * [azureDisk](#azuredisk)
-   * [azureFile](#azurefile)
-   * [cephfs](#cephfs)
-   * [cinder](#cinder)
+Kubernetes supports several types of Volumes. These core voulme types are 
+integrated into kubernetes, and include volume interfaces. 
+
+
    * [configMap](#configmap)
-   * [csi](#csi)
    * [downwardAPI](#downwardapi)
    * [emptyDir](#emptydir)
    * [fc (fibre channel)](#fc)
-   * [flexVolume](#flexVolume)
-   * [flocker](#flocker)
-   * [gcePersistentDisk](#gcepersistentdisk)
    * [gitRepo (deprecated)](#gitrepo)
    * [glusterfs](#glusterfs)
    * [hostPath](#hostpath)
@@ -84,174 +94,28 @@ Kubernetes supports several types of Volumes:
    * [nfs](#nfs)
    * [persistentVolumeClaim](#persistentvolumeclaim)
    * [projected](#projected)
-   * [portworxVolume](#portworxvolume)
-   * [quobyte](#quobyte)
    * [rbd](#rbd)
-   * [scaleIO](#scaleio)
    * [secret](#secret)
-   * [storageos](#storageos)
    * [vsphereVolume](#vspherevolume)
 
-We welcome additional contributions.
+"out of tree" below
+  - CSI
+  - Flex Volume
+  - one more?
+  - persistent volume claim?
 
-### awsElasticBlockStore {#awselasticblockstore}
-
-An `awsElasticBlockStore` volume mounts an Amazon Web Services (AWS) [EBS
-Volume](https://aws.amazon.com/ebs/) into your Pod.  Unlike
-`emptyDir`, which is erased when a Pod is removed, the contents of an EBS
-volume are preserved and the volume is merely unmounted.  This means that an
-EBS volume can be pre-populated with data, and that data can be "handed off"
-between Pods.
-
-{{< caution >}}
-You must create an EBS volume using `aws ec2 create-volume` or the AWS API before you can use it.
-{{< /caution >}}
-
-There are some restrictions when using an `awsElasticBlockStore` volume:
-
-* the nodes on which Pods are running must be AWS EC2 instances
-* those instances need to be in the same region and availability-zone as the EBS volume
-* EBS only supports a single EC2 instance mounting a volume
-
-#### Creating an EBS volume
-
-Before you can use an EBS volume with a Pod, you need to create it.
-
-```shell
-aws ec2 create-volume --availability-zone=eu-west-1a --size=10 --volume-type=gp2
-```
-
-Make sure the zone matches the zone you brought up your cluster in.  (And also check that the size and EBS volume
-type are suitable for your use!)
-
-#### AWS EBS Example configuration
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-ebs
-spec:
-  containers:
-  - image: k8s.gcr.io/test-webserver
-    name: test-container
-    volumeMounts:
-    - mountPath: /test-ebs
-      name: test-volume
-  volumes:
-  - name: test-volume
-    # This AWS EBS volume must already exist.
-    awsElasticBlockStore:
-      volumeID: <volume-id>
-      fsType: ext4
-```
-
-#### CSI Migration
-
-{{< feature-state for_k8s_version="v1.17" state="beta" >}}
-
-The CSI Migration feature for awsElasticBlockStore, when enabled, shims all plugin operations
-from the existing in-tree plugin to the `ebs.csi.aws.com` Container
-Storage Interface (CSI) Driver. In order to use this feature, the [AWS EBS CSI
-Driver](https://github.com/kubernetes-sigs/aws-ebs-csi-driver)
-must be installed on the cluster and the `CSIMigration` and `CSIMigrationAWS`
-Beta features must be enabled.
-
-#### CSI Migration Complete
-{{< feature-state for_k8s_version="v1.17" state="alpha" >}}
-
-To turn off the awsElasticBlockStore storage plugin from being loaded by controller manager and kubelet, you need to set this feature flag to true. This requires `ebs.csi.aws.com` Container Storage Interface (CSI) driver being installed on all worker nodes.
-
-### azureDisk {#azuredisk}
-
-A `azureDisk` is used to mount a Microsoft Azure [Data Disk](https://azure.microsoft.com/en-us/documentation/articles/virtual-machines-linux-about-disks-vhds/) into a Pod.
-
-More details can be found [here](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/azure_disk/README.md).
-
-#### CSI Migration
-
-{{< feature-state for_k8s_version="v1.19" state="beta" >}}
-
-The CSI Migration feature for azureDisk, when enabled, shims all plugin operations
-from the existing in-tree plugin to the `disk.csi.azure.com` Container
-Storage Interface (CSI) Driver. In order to use this feature, the [Azure Disk CSI
-Driver](https://github.com/kubernetes-sigs/azuredisk-csi-driver)
-must be installed on the cluster and the `CSIMigration` and `CSIMigrationAzureDisk`
-features must be enabled.
-
-### azureFile {#azurefile}
-
-A `azureFile` is used to mount a Microsoft Azure File Volume (SMB 2.1 and 3.0)
-into a Pod.
-
-More details can be found [here](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/azure_file/README.md).
-
-#### CSI Migration
-
-{{< feature-state for_k8s_version="v1.15" state="alpha" >}}
-
-The CSI Migration feature for azureFile, when enabled, shims all plugin operations
-from the existing in-tree plugin to the `file.csi.azure.com` Container
-Storage Interface (CSI) Driver. In order to use this feature, the [Azure File CSI
-Driver](https://github.com/kubernetes-sigs/azurefile-csi-driver)
-must be installed on the cluster and the `CSIMigration` and `CSIMigrationAzureFile`
-Alpha features must be enabled.
-
-### cephfs {#cephfs}
-
-A `cephfs` volume allows an existing CephFS volume to be
-mounted into your Pod. Unlike `emptyDir`, which is erased when a Pod is
-removed, the contents of a `cephfs` volume are preserved and the volume is merely
-unmounted.  This means that a CephFS volume can be pre-populated with data, and
-that data can be "handed off" between Pods.  CephFS can be mounted by multiple
-writers simultaneously.
-
-{{< caution >}}
-You must have your own Ceph server running with the share exported before you can use it.
-{{< /caution >}}
-
-See the [CephFS example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/cephfs/) for more details.
-
-### cinder {#cinder}
-
-{{< note >}}
-Prerequisite: Kubernetes with OpenStack Cloud Provider configured.
-{{< /note >}}
-
-`cinder` is used to mount OpenStack Cinder Volume into your Pod.
-
-#### Cinder Volume Example configuration
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-cinder
-spec:
-  containers:
-  - image: k8s.gcr.io/test-webserver
-    name: test-cinder-container
-    volumeMounts:
-    - mountPath: /test-cinder
-      name: test-volume
-  volumes:
-  - name: test-volume
-    # This OpenStack volume must already exist.
-    cinder:
-      volumeID: <volume-id>
-      fsType: ext4
-```
-
-#### CSI Migration
-
-{{< feature-state for_k8s_version="v1.18" state="beta" >}}
-
-The CSI Migration feature for Cinder, when enabled, shims all plugin operations
-from the existing in-tree plugin to the `cinder.csi.openstack.org` Container
-Storage Interface (CSI) Driver. In order to use this feature, the [Openstack Cinder CSI
-Driver](https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-csi-plugin.md)
-must be installed on the cluster and the `CSIMigration` and `CSIMigrationOpenStack`
-Beta features must be enabled.
+External types of volumes:
+   * [awsElasticBlockStore](#awselasticblockstore)
+   * [azureDisk](#azuredisk)
+   * [azureFile](#azurefile)
+   * [cephfs](#cephfs)
+   * [cinder](#cinder)
+   * [flocker](#flocker)
+   * [gcePersistentDisk](#gcepersistentdisk)
+   * [portworxVolume](#portworxvolume)
+   * [quobyte](#quobyte)
+   * [storageos](#storageos)
+   * [scaleIO](#scaleio)
 
 ### configMap {#configmap}
 
@@ -378,126 +242,6 @@ You must configure FC SAN Zoning to allocate and mask those LUNs (volumes) to th
 
 See the [FC example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/fibre_channel) for more details.
 
-### flocker {#flocker}
-
-[Flocker](https://github.com/ClusterHQ/flocker) is an open-source clustered Container data volume manager. It provides management
-and orchestration of data volumes backed by a variety of storage backends.
-
-A `flocker` volume allows a Flocker dataset to be mounted into a Pod. If the
-dataset does not already exist in Flocker, it needs to be first created with the Flocker
-CLI or by using the Flocker API. If the dataset already exists it will be
-reattached by Flocker to the node that the Pod is scheduled. This means data
-can be "handed off" between Pods as required.
-
-{{< caution >}}
-You must have your own Flocker installation running before you can use it.
-{{< /caution >}}
-
-See the [Flocker example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/flocker) for more details.
-
-### gcePersistentDisk {#gcepersistentdisk}
-
-A `gcePersistentDisk` volume mounts a Google Compute Engine (GCE)
-[Persistent Disk](https://cloud.google.com/compute/docs/disks) into your Pod.  Unlike
-`emptyDir`, which is erased when a Pod is removed, the contents of a PD are
-preserved and the volume is merely unmounted.  This means that a PD can be
-pre-populated with data, and that data can be "handed off" between Pods.
-
-{{< caution >}}
-You must create a PD using `gcloud` or the GCE API or UI before you can use it.
-{{< /caution >}}
-
-There are some restrictions when using a `gcePersistentDisk`:
-
-* the nodes on which Pods are running must be GCE VMs
-* those VMs need to be in the same GCE project and zone as the PD
-
-A feature of PD is that they can be mounted as read-only by multiple consumers
-simultaneously.  This means that you can pre-populate a PD with your dataset
-and then serve it in parallel from as many Pods as you need.  Unfortunately,
-PDs can only be mounted by a single consumer in read-write mode - no
-simultaneous writers allowed.
-
-Using a PD on a Pod controlled by a ReplicationController will fail unless
-the PD is read-only or the replica count is 0 or 1.
-
-#### Creating a PD
-
-Before you can use a GCE PD with a Pod, you need to create it.
-
-```shell
-gcloud compute disks create --size=500GB --zone=us-central1-a my-data-disk
-```
-
-#### Example Pod
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-pd
-spec:
-  containers:
-  - image: k8s.gcr.io/test-webserver
-    name: test-container
-    volumeMounts:
-    - mountPath: /test-pd
-      name: test-volume
-  volumes:
-  - name: test-volume
-    # This GCE PD must already exist.
-    gcePersistentDisk:
-      pdName: my-data-disk
-      fsType: ext4
-```
-
-#### Regional Persistent Disks
-The [Regional Persistent Disks](https://cloud.google.com/compute/docs/disks/#repds) feature allows the creation of Persistent Disks that are available in two zones within the same region. In order to use this feature, the volume must be provisioned as a PersistentVolume; referencing the volume directly from a pod is not supported.
-
-#### Manually provisioning a Regional PD PersistentVolume
-Dynamic provisioning is possible using a [StorageClass for GCE PD](/docs/concepts/storage/storage-classes/#gce).
-Before creating a PersistentVolume, you must create the PD:
-```shell
-gcloud compute disks create --size=500GB my-data-disk
-    --region us-central1
-    --replica-zones us-central1-a,us-central1-b
-```
-Example PersistentVolume spec:
-
-```yaml
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: test-volume
-spec:
-  capacity:
-    storage: 400Gi
-  accessModes:
-  - ReadWriteOnce
-  gcePersistentDisk:
-    pdName: my-data-disk
-    fsType: ext4
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: failure-domain.beta.kubernetes.io/zone
-          operator: In
-          values:
-          - us-central1-a
-          - us-central1-b
-```
-
-#### CSI Migration
-
-{{< feature-state for_k8s_version="v1.17" state="beta" >}}
-
-The CSI Migration feature for GCE PD, when enabled, shims all plugin operations
-from the existing in-tree plugin to the `pd.csi.storage.gke.io` Container
-Storage Interface (CSI) Driver. In order to use this feature, the [GCE PD CSI
-Driver](https://github.com/kubernetes-sigs/gcp-compute-persistent-disk-csi-driver)
-must be installed on the cluster and the `CSIMigration` and `CSIMigrationGCE`
-Beta features must be enabled.
 
 ### gitRepo (deprecated) {#gitrepo}
 
@@ -909,56 +653,6 @@ A Container using a projected volume source as a [subPath](#using-subpath) volum
 receive updates for those volume sources.
 {{< /note >}}
 
-### portworxVolume {#portworxvolume}
-
-A `portworxVolume` is an elastic block storage layer that runs hyperconverged with
-Kubernetes. [Portworx](https://portworx.com/use-case/kubernetes-storage/) fingerprints storage in a server, tiers based on capabilities,
-and aggregates capacity across multiple servers. Portworx runs in-guest in virtual machines or on bare metal Linux nodes.
-
-A `portworxVolume` can be dynamically created through Kubernetes or it can also
-be pre-provisioned and referenced inside a Kubernetes Pod.
-Here is an example Pod referencing a pre-provisioned PortworxVolume:
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-portworx-volume-pod
-spec:
-  containers:
-  - image: k8s.gcr.io/test-webserver
-    name: test-container
-    volumeMounts:
-    - mountPath: /mnt
-      name: pxvol
-  volumes:
-  - name: pxvol
-    # This Portworx volume must already exist.
-    portworxVolume:
-      volumeID: "pxvol"
-      fsType: "<fs-type>"
-```
-
-{{< caution >}}
-Make sure you have an existing PortworxVolume with name `pxvol`
-before using it in the Pod.
-{{< /caution >}}
-
-More details and examples can be found [here](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/portworx/README.md).
-
-### quobyte {#quobyte}
-
-A `quobyte` volume allows an existing [Quobyte](https://www.quobyte.com) volume to
-be mounted into your Pod.
-
-{{< caution >}}
-You must have your own Quobyte setup running with the volumes
-created before you can use it.
-{{< /caution >}}
-
-Quobyte supports the {{< glossary_tooltip text="Container Storage Interface" term_id="csi" >}}.
-CSI is the recommended plugin to use Quobyte volumes inside Kubernetes. Quobyte's
-GitHub project has [instructions](https://github.com/quobyte/quobyte-csi#quobyte-csi) for deploying Quobyte using CSI, along with examples.
 
 ### rbd {#rbd}
 
@@ -1042,150 +736,7 @@ receive Secret updates.
 
 Secrets are described in more detail [here](/docs/concepts/configuration/secret/).
 
-### storageOS {#storageos}
 
-A `storageos` volume allows an existing [StorageOS](https://www.storageos.com)
-volume to be mounted into your Pod.
-
-StorageOS runs as a Container within your Kubernetes environment, making local
-or attached storage accessible from any node within the Kubernetes cluster.
-Data can be replicated to protect against node failure. Thin provisioning and
-compression can improve utilization and reduce cost.
-
-At its core, StorageOS provides block storage to Containers, accessible via a file system.
-
-The StorageOS Container requires 64-bit Linux and has no additional dependencies.
-A free developer license is available.
-
-{{< caution >}}
-You must run the StorageOS Container on each node that wants to
-access StorageOS volumes or that will contribute storage capacity to the pool.
-For installation instructions, consult the
-[StorageOS documentation](https://docs.storageos.com).
-{{< /caution >}}
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  labels:
-    name: redis
-    role: master
-  name: test-storageos-redis
-spec:
-  containers:
-    - name: master
-      image: kubernetes/redis:v1
-      env:
-        - name: MASTER
-          value: "true"
-      ports:
-        - containerPort: 6379
-      volumeMounts:
-        - mountPath: /redis-master-data
-          name: redis-data
-  volumes:
-    - name: redis-data
-      storageos:
-        # The `redis-vol01` volume must already exist within StorageOS in the `default` namespace.
-        volumeName: redis-vol01
-        fsType: ext4
-```
-
-For more information including Dynamic Provisioning and Persistent Volume Claims, please see the
-[StorageOS examples](https://github.com/kubernetes/examples/blob/master/volumes/storageos).
-
-### vsphereVolume {#vspherevolume}
-
-{{< note >}}
-Prerequisite: Kubernetes with vSphere Cloud Provider configured. For cloudprovider
-configuration please refer [vSphere getting started guide](https://vmware.github.io/vsphere-storage-for-kubernetes/documentation/).
-{{< /note >}}
-
-A `vsphereVolume` is used to mount a vSphere VMDK Volume into your Pod.  The contents
-of a volume are preserved when it is unmounted. It supports both VMFS and VSAN datastore.
-
-{{< caution >}}
-You must create VMDK using one of the following methods before using with Pod.
-{{< /caution >}}
-
-#### Creating a VMDK volume
-
-Choose one of the following methods to create a VMDK.
-
-{{< tabs name="tabs_volumes" >}}
-{{% tab name="Create using vmkfstools" %}}
-First ssh into ESX, then use the following command to create a VMDK:
-
-```shell
-vmkfstools -c 2G /vmfs/volumes/DatastoreName/volumes/myDisk.vmdk
-```
-{{% /tab %}}
-{{% tab name="Create using vmware-vdiskmanager" %}}
-Use the following command to create a VMDK:
-
-```shell
-vmware-vdiskmanager -c -t 0 -s 40GB -a lsilogic myDisk.vmdk
-```
-{{% /tab %}}
-
-{{< /tabs >}}
-
-
-#### vSphere VMDK Example configuration
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-vmdk
-spec:
-  containers:
-  - image: k8s.gcr.io/test-webserver
-    name: test-container
-    volumeMounts:
-    - mountPath: /test-vmdk
-      name: test-volume
-  volumes:
-  - name: test-volume
-    # This VMDK volume must already exist.
-    vsphereVolume:
-      volumePath: "[DatastoreName] volumes/myDisk"
-      fsType: ext4
-```
-
-More examples can be found [here](https://github.com/kubernetes/examples/tree/master/staging/volumes/vsphere).
-
-#### CSI migration
-
-{{< feature-state for_k8s_version="v1.19" state="beta" >}}
-
-The CSI Migration feature for vsphereVolume, when enabled, shims all plugin operations
-from the existing in-tree plugin to the `csi.vsphere.vmware.com` {{< glossary_tooltip text="CSI" term_id="csi" >}} driver. In order to use this feature, the [vSphere CSI
-Driver](https://github.com/kubernetes-sigs/vsphere-csi-driver)
-must be installed on the cluster and the `CSIMigration` and `CSIMigrationvSphere`
-[feature gates](/docs/reference/command-line-tools-reference/feature-gates/) must be enabled.
-
-This also requires minimum vSphere vCenter/ESXi Version to be 7.0u1 and minimum HW Version to be VM version 15.
-
-{{< note >}}
-The following StorageClass parameters from the built-in vsphereVolume plugin are not supported by the vSphere CSI driver:
-
-* `diskformat`
-* `hostfailurestotolerate`
-* `forceprovisioning`
-* `cachereservation`
-* `diskstripes`
-* `objectspacereservation`
-* `iopslimit`
-
-Existing volumes created using these parameters will be migrated to the vSphere CSI driver, but new volumes created by the vSphere CSI driver will not be honoring these parameters.
-{{< /note >}}
-
-#### CSI Migration Complete
-{{< feature-state for_k8s_version="v1.19" state="beta" >}}
-
-To turn off the vsphereVolume plugin from being loaded by controller manager and kubelet, you need to set this feature flag to true. This requires `csi.vsphere.vmware.com` {{< glossary_tooltip text="CSI" term_id="csi" >}} driver being installed on all worker nodes.
 
 
 ## Using subPath
@@ -1274,7 +825,7 @@ request a certain amount of space using a [resource](/docs/concepts/configuratio
 specification, and to select the type of media to use, for clusters that have
 several media types.
 
-## Out-of-Tree Volume Plugins
+## Volume Plugins
 
 The Out-of-tree volume plugins include the Container Storage Interface (CSI)
 and FlexVolume. They enable storage vendors to create custom storage plugins
@@ -1485,7 +1036,483 @@ Or, remove `MountFlags=slave` if present.  Then restart the Docker daemon:
 sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
+## External Volume Providers
 
+### awsElasticBlockStore {#awselasticblockstore}
+
+An `awsElasticBlockStore` volume mounts an Amazon Web Services (AWS) [EBS
+Volume](https://aws.amazon.com/ebs/) into your Pod.  Unlike
+`emptyDir`, which is erased when a Pod is removed, the contents of an EBS
+volume are preserved and the volume is merely unmounted.  This means that an
+EBS volume can be pre-populated with data, and that data can be "handed off"
+between Pods.
+
+{{< caution >}}
+You must create an EBS volume using `aws ec2 create-volume` or the AWS API before you can use it.
+{{< /caution >}}
+
+There are some restrictions when using an `awsElasticBlockStore` volume:
+
+* the nodes on which Pods are running must be AWS EC2 instances
+* those instances need to be in the same region and availability-zone as the EBS volume
+* EBS only supports a single EC2 instance mounting a volume
+
+#### Creating an EBS volume
+
+Before you can use an EBS volume with a Pod, you need to create it.
+
+```shell
+aws ec2 create-volume --availability-zone=eu-west-1a --size=10 --volume-type=gp2
+```
+
+Make sure the zone matches the zone you brought up your cluster in.  (And also check that the size and EBS volume
+type are suitable for your use!)
+
+#### AWS EBS Example configuration
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-ebs
+spec:
+  containers:
+  - image: k8s.gcr.io/test-webserver
+    name: test-container
+    volumeMounts:
+    - mountPath: /test-ebs
+      name: test-volume
+  volumes:
+  - name: test-volume
+    # This AWS EBS volume must already exist.
+    awsElasticBlockStore:
+      volumeID: <volume-id>
+      fsType: ext4
+```
+
+#### CSI Migration
+
+{{< feature-state for_k8s_version="v1.17" state="beta" >}}
+
+The CSI Migration feature for awsElasticBlockStore, when enabled, shims all plugin operations
+from the existing in-tree plugin to the `ebs.csi.aws.com` Container
+Storage Interface (CSI) Driver. In order to use this feature, the [AWS EBS CSI
+Driver](https://github.com/kubernetes-sigs/aws-ebs-csi-driver)
+must be installed on the cluster and the `CSIMigration` and `CSIMigrationAWS`
+Beta features must be enabled.
+
+#### CSI Migration Complete
+{{< feature-state for_k8s_version="v1.17" state="alpha" >}}
+
+To turn off the awsElasticBlockStore storage plugin from being loaded by controller manager and kubelet, you need to set this feature flag to true. This requires `ebs.csi.aws.com` Container Storage Interface (CSI) driver being installed on all worker nodes.
+
+### azureDisk {#azuredisk}
+
+A `azureDisk` is used to mount a Microsoft Azure [Data Disk](https://azure.microsoft.com/en-us/documentation/articles/virtual-machines-linux-about-disks-vhds/) into a Pod.
+
+More details can be found [here](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/azure_disk/README.md).
+
+#### CSI Migration
+
+{{< feature-state for_k8s_version="v1.19" state="beta" >}}
+
+The CSI Migration feature for azureDisk, when enabled, shims all plugin operations
+from the existing in-tree plugin to the `disk.csi.azure.com` Container
+Storage Interface (CSI) Driver. In order to use this feature, the [Azure Disk CSI
+Driver](https://github.com/kubernetes-sigs/azuredisk-csi-driver)
+must be installed on the cluster and the `CSIMigration` and `CSIMigrationAzureDisk`
+features must be enabled.
+
+### azureFile {#azurefile}
+
+A `azureFile` is used to mount a Microsoft Azure File Volume (SMB 2.1 and 3.0)
+into a Pod.
+
+More details can be found [here](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/azure_file/README.md).
+
+#### CSI Migration
+
+{{< feature-state for_k8s_version="v1.15" state="alpha" >}}
+
+The CSI Migration feature for azureFile, when enabled, shims all plugin operations
+from the existing in-tree plugin to the `file.csi.azure.com` Container
+Storage Interface (CSI) Driver. In order to use this feature, the [Azure File CSI
+Driver](https://github.com/kubernetes-sigs/azurefile-csi-driver)
+must be installed on the cluster and the `CSIMigration` and `CSIMigrationAzureFile`
+Alpha features must be enabled.
+
+### cephfs {#cephfs}
+
+A `cephfs` volume allows an existing CephFS volume to be
+mounted into your Pod. Unlike `emptyDir`, which is erased when a Pod is
+removed, the contents of a `cephfs` volume are preserved and the volume is merely
+unmounted.  This means that a CephFS volume can be pre-populated with data, and
+that data can be "handed off" between Pods.  CephFS can be mounted by multiple
+writers simultaneously.
+
+{{< caution >}}
+You must have your own Ceph server running with the share exported before you can use it.
+{{< /caution >}}
+
+See the [CephFS example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/cephfs/) for more details.
+
+### cinder {#cinder}
+
+{{< note >}}
+Prerequisite: Kubernetes with OpenStack Cloud Provider configured.
+{{< /note >}}
+
+`cinder` is used to mount OpenStack Cinder Volume into your Pod.
+
+#### Cinder Volume Example configuration
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-cinder
+spec:
+  containers:
+  - image: k8s.gcr.io/test-webserver
+    name: test-cinder-container
+    volumeMounts:
+    - mountPath: /test-cinder
+      name: test-volume
+  volumes:
+  - name: test-volume
+    # This OpenStack volume must already exist.
+    cinder:
+      volumeID: <volume-id>
+      fsType: ext4
+```
+
+#### CSI Migration
+
+{{< feature-state for_k8s_version="v1.18" state="beta" >}}
+
+The CSI Migration feature for Cinder, when enabled, shims all plugin operations
+from the existing in-tree plugin to the `cinder.csi.openstack.org` Container
+Storage Interface (CSI) Driver. In order to use this feature, the [Openstack Cinder CSI
+Driver](https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-csi-plugin.md)
+must be installed on the cluster and the `CSIMigration` and `CSIMigrationOpenStack`
+Beta features must be enabled.
+
+### flocker {#flocker}
+
+[Flocker](https://github.com/ClusterHQ/flocker) is an open-source clustered Container data volume manager. It provides management
+and orchestration of data volumes backed by a variety of storage backends.
+
+A `flocker` volume allows a Flocker dataset to be mounted into a Pod. If the
+dataset does not already exist in Flocker, it needs to be first created with the Flocker
+CLI or by using the Flocker API. If the dataset already exists it will be
+reattached by Flocker to the node that the Pod is scheduled. This means data
+can be "handed off" between Pods as required.
+
+{{< caution >}}
+You must have your own Flocker installation running before you can use it.
+{{< /caution >}}
+
+See the [Flocker example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/flocker) for more details.
+
+### gcePersistentDisk {#gcepersistentdisk}
+
+A `gcePersistentDisk` volume mounts a Google Compute Engine (GCE)
+[Persistent Disk](https://cloud.google.com/compute/docs/disks) into your Pod.  Unlike
+`emptyDir`, which is erased when a Pod is removed, the contents of a PD are
+preserved and the volume is merely unmounted.  This means that a PD can be
+pre-populated with data, and that data can be "handed off" between Pods.
+
+{{< caution >}}
+You must create a PD using `gcloud` or the GCE API or UI before you can use it.
+{{< /caution >}}
+
+There are some restrictions when using a `gcePersistentDisk`:
+
+* the nodes on which Pods are running must be GCE VMs
+* those VMs need to be in the same GCE project and zone as the PD
+
+A feature of PD is that they can be mounted as read-only by multiple consumers
+simultaneously.  This means that you can pre-populate a PD with your dataset
+and then serve it in parallel from as many Pods as you need.  Unfortunately,
+PDs can only be mounted by a single consumer in read-write mode - no
+simultaneous writers allowed.
+
+Using a PD on a Pod controlled by a ReplicationController will fail unless
+the PD is read-only or the replica count is 0 or 1.
+
+#### Creating a PD
+
+Before you can use a GCE PD with a Pod, you need to create it.
+
+```shell
+gcloud compute disks create --size=500GB --zone=us-central1-a my-data-disk
+```
+
+#### Example Pod
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pd
+spec:
+  containers:
+  - image: k8s.gcr.io/test-webserver
+    name: test-container
+    volumeMounts:
+    - mountPath: /test-pd
+      name: test-volume
+  volumes:
+  - name: test-volume
+    # This GCE PD must already exist.
+    gcePersistentDisk:
+      pdName: my-data-disk
+      fsType: ext4
+```
+
+#### Regional Persistent Disks
+The [Regional Persistent Disks](https://cloud.google.com/compute/docs/disks/#repds) feature allows the creation of Persistent Disks that are available in two zones within the same region. In order to use this feature, the volume must be provisioned as a PersistentVolume; referencing the volume directly from a pod is not supported.
+
+#### Manually provisioning a Regional PD PersistentVolume
+Dynamic provisioning is possible using a [StorageClass for GCE PD](/docs/concepts/storage/storage-classes/#gce).
+Before creating a PersistentVolume, you must create the PD:
+```shell
+gcloud compute disks create --size=500GB my-data-disk
+    --region us-central1
+    --replica-zones us-central1-a,us-central1-b
+```
+Example PersistentVolume spec:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: test-volume
+spec:
+  capacity:
+    storage: 400Gi
+  accessModes:
+  - ReadWriteOnce
+  gcePersistentDisk:
+    pdName: my-data-disk
+    fsType: ext4
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: failure-domain.beta.kubernetes.io/zone
+          operator: In
+          values:
+          - us-central1-a
+          - us-central1-b
+```
+
+#### CSI Migration
+
+{{< feature-state for_k8s_version="v1.17" state="beta" >}}
+
+The CSI Migration feature for GCE PD, when enabled, shims all plugin operations
+from the existing in-tree plugin to the `pd.csi.storage.gke.io` Container
+Storage Interface (CSI) Driver. In order to use this feature, the [GCE PD CSI
+Driver](https://github.com/kubernetes-sigs/gcp-compute-persistent-disk-csi-driver)
+must be installed on the cluster and the `CSIMigration` and `CSIMigrationGCE`
+Beta features must be enabled.
+
+### portworxVolume {#portworxvolume}
+
+A `portworxVolume` is an elastic block storage layer that runs hyperconverged with
+Kubernetes. [Portworx](https://portworx.com/use-case/kubernetes-storage/) fingerprints storage in a server, tiers based on capabilities,
+and aggregates capacity across multiple servers. Portworx runs in-guest in virtual machines or on bare metal Linux nodes.
+
+A `portworxVolume` can be dynamically created through Kubernetes or it can also
+be pre-provisioned and referenced inside a Kubernetes Pod.
+Here is an example Pod referencing a pre-provisioned PortworxVolume:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-portworx-volume-pod
+spec:
+  containers:
+  - image: k8s.gcr.io/test-webserver
+    name: test-container
+    volumeMounts:
+    - mountPath: /mnt
+      name: pxvol
+  volumes:
+  - name: pxvol
+    # This Portworx volume must already exist.
+    portworxVolume:
+      volumeID: "pxvol"
+      fsType: "<fs-type>"
+```
+
+{{< caution >}}
+Make sure you have an existing PortworxVolume with name `pxvol`
+before using it in the Pod.
+{{< /caution >}}
+
+More details and examples can be found [here](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/portworx/README.md).
+
+### quobyte {#quobyte}
+
+A `quobyte` volume allows an existing [Quobyte](https://www.quobyte.com) volume to
+be mounted into your Pod.
+
+{{< caution >}}
+You must have your own Quobyte setup running with the volumes
+created before you can use it.
+{{< /caution >}}
+
+Quobyte supports the {{< glossary_tooltip text="Container Storage Interface" term_id="csi" >}}.
+CSI is the recommended plugin to use Quobyte volumes inside Kubernetes. Quobyte's
+GitHub project has [instructions](https://github.com/quobyte/quobyte-csi#quobyte-csi) for deploying Quobyte using CSI, along with examples.
+
+### storageOS {#storageos}
+
+A `storageos` volume allows an existing [StorageOS](https://www.storageos.com)
+volume to be mounted into your Pod.
+
+StorageOS runs as a Container within your Kubernetes environment, making local
+or attached storage accessible from any node within the Kubernetes cluster.
+Data can be replicated to protect against node failure. Thin provisioning and
+compression can improve utilization and reduce cost.
+
+At its core, StorageOS provides block storage to Containers, accessible via a file system.
+
+The StorageOS Container requires 64-bit Linux and has no additional dependencies.
+A free developer license is available.
+
+{{< caution >}}
+You must run the StorageOS Container on each node that wants to
+access StorageOS volumes or that will contribute storage capacity to the pool.
+For installation instructions, consult the
+[StorageOS documentation](https://docs.storageos.com).
+{{< /caution >}}
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    name: redis
+    role: master
+  name: test-storageos-redis
+spec:
+  containers:
+    - name: master
+      image: kubernetes/redis:v1
+      env:
+        - name: MASTER
+          value: "true"
+      ports:
+        - containerPort: 6379
+      volumeMounts:
+        - mountPath: /redis-master-data
+          name: redis-data
+  volumes:
+    - name: redis-data
+      storageos:
+        # The `redis-vol01` volume must already exist within StorageOS in the `default` namespace.
+        volumeName: redis-vol01
+        fsType: ext4
+```
+
+For more information including Dynamic Provisioning and Persistent Volume Claims, please see the
+[StorageOS examples](https://github.com/kubernetes/examples/blob/master/volumes/storageos).
+
+### vsphereVolume {#vspherevolume}
+
+{{< note >}}
+Prerequisite: Kubernetes with vSphere Cloud Provider configured. For cloudprovider
+configuration please refer [vSphere getting started guide](https://vmware.github.io/vsphere-storage-for-kubernetes/documentation/).
+{{< /note >}}
+
+A `vsphereVolume` is used to mount a vSphere VMDK Volume into your Pod.  The contents
+of a volume are preserved when it is unmounted. It supports both VMFS and VSAN datastore.
+
+{{< caution >}}
+You must create VMDK using one of the following methods before using with Pod.
+{{< /caution >}}
+
+#### Creating a VMDK volume
+
+Choose one of the following methods to create a VMDK.
+
+{{< tabs name="tabs_volumes" >}}
+{{% tab name="Create using vmkfstools" %}}
+First ssh into ESX, then use the following command to create a VMDK:
+
+```shell
+vmkfstools -c 2G /vmfs/volumes/DatastoreName/volumes/myDisk.vmdk
+```
+{{% /tab %}}
+{{% tab name="Create using vmware-vdiskmanager" %}}
+Use the following command to create a VMDK:
+
+```shell
+vmware-vdiskmanager -c -t 0 -s 40GB -a lsilogic myDisk.vmdk
+```
+{{% /tab %}}
+
+{{< /tabs >}}
+
+
+#### vSphere VMDK Example configuration
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-vmdk
+spec:
+  containers:
+  - image: k8s.gcr.io/test-webserver
+    name: test-container
+    volumeMounts:
+    - mountPath: /test-vmdk
+      name: test-volume
+  volumes:
+  - name: test-volume
+    # This VMDK volume must already exist.
+    vsphereVolume:
+      volumePath: "[DatastoreName] volumes/myDisk"
+      fsType: ext4
+```
+
+More examples can be found [here](https://github.com/kubernetes/examples/tree/master/staging/volumes/vsphere).
+
+#### CSI migration
+
+{{< feature-state for_k8s_version="v1.19" state="beta" >}}
+
+The CSI Migration feature for vsphereVolume, when enabled, shims all plugin operations
+from the existing in-tree plugin to the `csi.vsphere.vmware.com` {{< glossary_tooltip text="CSI" term_id="csi" >}} driver. In order to use this feature, the [vSphere CSI
+Driver](https://github.com/kubernetes-sigs/vsphere-csi-driver)
+must be installed on the cluster and the `CSIMigration` and `CSIMigrationvSphere`
+[feature gates](/docs/reference/command-line-tools-reference/feature-gates/) must be enabled.
+
+This also requires minimum vSphere vCenter/ESXi Version to be 7.0u1 and minimum HW Version to be VM version 15.
+
+{{< note >}}
+The following StorageClass parameters from the built-in vsphereVolume plugin are not supported by the vSphere CSI driver:
+
+* `diskformat`
+* `hostfailurestotolerate`
+* `forceprovisioning`
+* `cachereservation`
+* `diskstripes`
+* `objectspacereservation`
+* `iopslimit`
+
+Existing volumes created using these parameters will be migrated to the vSphere CSI driver, but new volumes created by the vSphere CSI driver will not be honoring these parameters.
+{{< /note >}}
+
+#### CSI Migration Complete
+{{< feature-state for_k8s_version="v1.19" state="beta" >}}
+
+To turn off the vsphereVolume plugin from being loaded by controller manager and kubelet, you need to set this feature flag to true. This requires `csi.vsphere.vmware.com` {{< glossary_tooltip text="CSI" term_id="csi" >}} driver being installed on all worker nodes.
 
 
 ## {{% heading "whatsnext" %}}
