@@ -72,16 +72,19 @@ spec:
       image: busybox
       volumeMounts:
         - name: cache-volume
-          mountPath: /etc/config
+          mountPath: /etc/cache
 
 ```
 
 ## Core Volume Types
 
 Kubernetes supports several types of Volumes. These core voulme types are 
-integrated into kubernetes, and include volume interfaces. 
+integrated into kubernetes, and include volume interfaces (e.g., NFS). 
 
+Kubernetes handles creating the connection to the Volumes, at the pod level.
+Containers simply see a path pointing to the volume. 
 
+Core Volume Types:
    * [configMap](#configmap)
    * [downwardAPI](#downwardapi)
    * [emptyDir](#emptydir)
@@ -98,7 +101,7 @@ integrated into kubernetes, and include volume interfaces.
    * [secret](#secret)
    * [vsphereVolume](#vspherevolume)
 
-"out of tree" below
+Plugin Types:
   - CSI
   - Flex Volume
   - one more?
@@ -332,6 +335,19 @@ Watch out when using this type of volume, because:
   [privileged Container](/docs/tasks/configure-pod-container/security-context/) or modify the file
   permissions on the host to be able to write to a `hostPath` volume
 
+#### Resources
+
+The storage media (Disk, SSD, etc.) of an `emptyDir` volume is determined by the
+medium of the filesystem holding the kubelet root dir (typically
+`/var/lib/kubelet`).  There is no limit on how much space an `emptyDir` or
+`hostPath` volume can consume, and no isolation between Containers or between
+Pods.
+
+In the future, we expect that `emptyDir` and `hostPath` volumes will be able to
+request a certain amount of space using a [resource](/docs/concepts/configuration/manage-resources-containers/)
+specification, and to select the type of media to use, for clusters that have
+several media types.
+
 #### Example Pod
 
 ```yaml
@@ -409,6 +425,8 @@ See the [iSCSI example](https://github.com/kubernetes/examples/tree/{{< param "g
 
 ### local {#local}
 
+// TODO: compare to hostPath?
+
 {{< feature-state for_k8s_version="v1.14" state="stable" >}}
 
 A `local` volume represents a mounted local storage device such as a disk,
@@ -417,8 +435,8 @@ partition or directory.
 Local volumes can only be used as a statically created PersistentVolume. Dynamic
 provisioning is not supported yet.
 
-Compared to `hostPath` volumes, local volumes can be used in a durable and
-portable manner without manually scheduling Pods to nodes, as the system is aware
+Compared to `hostPath` volumes, local volumes can be used in a *durable and
+portable manner* without manually scheduling Pods to nodes, as the system is aware
 of the volume's node constraints by looking at the node affinity on the PersistentVolume.
 
 However, local volumes are still subject to the availability of the underlying
@@ -675,47 +693,7 @@ simultaneous writers allowed.
 
 See the [RBD example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/rbd) for more details.
 
-### scaleIO {#scaleio}
 
-ScaleIO is a software-based storage platform that can use existing hardware to
-create clusters of scalable shared block networked storage. The `scaleIO` volume
-plugin allows deployed Pods to access existing ScaleIO
-volumes (or it can dynamically provision new volumes for persistent volume claims, see
-[ScaleIO Persistent Volumes](/docs/concepts/storage/persistent-volumes/#scaleio)).
-
-{{< caution >}}
-You must have an existing ScaleIO cluster already setup and
-running with the volumes created before you can use them.
-{{< /caution >}}
-
-The following is an example of Pod configuration with ScaleIO:
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: pod-0
-spec:
-  containers:
-  - image: k8s.gcr.io/test-webserver
-    name: pod-0
-    volumeMounts:
-    - mountPath: /test-pd
-      name: vol-0
-  volumes:
-  - name: vol-0
-    scaleIO:
-      gateway: https://localhost:443/api
-      system: scaleio
-      protectionDomain: sd0
-      storagePool: sp1
-      volumeName: vol-0
-      secretRef:
-        name: sio-secret
-      fsType: xfs
-```
-
-For further detail, please see the [ScaleIO examples](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/scaleio).
 
 ### secret {#secret}
 
@@ -812,18 +790,9 @@ spec:
       path: /var/log/pods
 ```
 
-## Resources
 
-The storage media (Disk, SSD, etc.) of an `emptyDir` volume is determined by the
-medium of the filesystem holding the kubelet root dir (typically
-`/var/lib/kubelet`).  There is no limit on how much space an `emptyDir` or
-`hostPath` volume can consume, and no isolation between Containers or between
-Pods.
 
-In the future, we expect that `emptyDir` and `hostPath` volumes will be able to
-request a certain amount of space using a [resource](/docs/concepts/configuration/manage-resources-containers/)
-specification, and to select the type of media to use, for clusters that have
-several media types.
+// TODO: introduce these better? plugins? out of tree?
 
 ## Volume Plugins
 
@@ -1037,6 +1006,8 @@ sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 ## External Volume Providers
+
+// TODO: warning, migrate to plugins
 
 ### awsElasticBlockStore {#awselasticblockstore}
 
@@ -1368,6 +1339,48 @@ created before you can use it.
 Quobyte supports the {{< glossary_tooltip text="Container Storage Interface" term_id="csi" >}}.
 CSI is the recommended plugin to use Quobyte volumes inside Kubernetes. Quobyte's
 GitHub project has [instructions](https://github.com/quobyte/quobyte-csi#quobyte-csi) for deploying Quobyte using CSI, along with examples.
+
+### scaleIO {#scaleio}
+
+ScaleIO is a software-based storage platform that can use existing hardware to
+create clusters of scalable shared block networked storage. The `scaleIO` volume
+plugin allows deployed Pods to access existing ScaleIO
+volumes (or it can dynamically provision new volumes for persistent volume claims, see
+[ScaleIO Persistent Volumes](/docs/concepts/storage/persistent-volumes/#scaleio)).
+
+{{< caution >}}
+You must have an existing ScaleIO cluster already setup and
+running with the volumes created before you can use them.
+{{< /caution >}}
+
+The following is an example of Pod configuration with ScaleIO:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-0
+spec:
+  containers:
+  - image: k8s.gcr.io/test-webserver
+    name: pod-0
+    volumeMounts:
+    - mountPath: /test-pd
+      name: vol-0
+  volumes:
+  - name: vol-0
+    scaleIO:
+      gateway: https://localhost:443/api
+      system: scaleio
+      protectionDomain: sd0
+      storagePool: sp1
+      volumeName: vol-0
+      secretRef:
+        name: sio-secret
+      fsType: xfs
+```
+
+For further detail, please see the [ScaleIO examples](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/scaleio).
 
 ### storageOS {#storageos}
 
