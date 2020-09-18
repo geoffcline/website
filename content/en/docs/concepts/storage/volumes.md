@@ -11,8 +11,8 @@ weight: 10
 
 <!-- overview -->
 
-The Kubernetes `Volume` abstraction (1) facilitates sharing files between 
-containers on the same `Pod`, and (2) allows files to persist when a container 
+The Kubernetes `Volume` abstraction facilitates sharing files between 
+containers on the same `Pod`, and allows files to persist when a container 
 is restarted. 
 
 Familiarity with [Pods](/docs/concepts/workloads/pods/pod/) is suggested.
@@ -22,25 +22,27 @@ Familiarity with [Pods](/docs/concepts/workloads/pods/pod/) is suggested.
 ## Background
 
 Files stored within a filesystem of a container are temporary. When a container 
-is restarted, it returns back to the state of the base image. 
+is restarted, it resets to the base image. 
 
-A Kubernetes volume is tied to the pod that encloses it. The pod maintains the 
-volume as different containers are started or stopped. 
+A Kubernetes *volume* is tied to the pod that encloses it. The pod maintains the 
+volume as different containers are started or stopped. The pod may be connected to multiple volumes, of any type.
 
 At its core, a volume is just a directory, possibly with some data in it, which
-is accessible to the Containers in a Pod.  How that directory comes to be, the
+is accessible to the containers in a pod.  How that directory comes to be, the
 medium that backs it, and the contents of it are determined by the particular
 volume type used.
 
-Kubernetes supports a variety of different volume types, such as host directories
-and NFS mounts. Kubernetes also supports advanced file systems such as gluster. 
+Kubernetes supports a variety of different volume types, such as directories from the host system
+and NFS mounts. 
+ 
 
-A kubernetes pod may be connected to multiple volumes of varying types. 
+### Volume Specification Example
+ 
+First, Specify a pod that will provide the volume. 
 
-First, Specify a `Pod` that will provide the volume. 
-To use a volume, a `Pod` specifies what volumes to provide for the Pod (the
+The `Pod` specification includes what `volumes` to provide -- the
 `.spec.volumes`
-field) 
+field.
 
 ```yaml
 apiVersion: v1
@@ -53,9 +55,11 @@ spec:
       emptyDir: {}
 ```
 
-Second, Specify a mount point between a volume on the pod and the container (the
+Second, Specify a mount point between a volume on the pod and a container -- the
 `.spec.containers[*].volumeMounts`
-field). Volumes can not mount into other volumes, or have hard links to
+field. 
+
+Volumes can not mount into other volumes, or have hard links to
 other volumes. Each Container in the Pod must independently specify where to
 mount each volume. 
 
@@ -76,15 +80,16 @@ spec:
 
 ```
 
-## Core Volume Types
+### Core Volume Types
 
 Kubernetes supports several types of Volumes. These core voulme types are 
-integrated into kubernetes, and include volume interfaces (e.g., NFS). 
+integrated into kubernetes, and include network storage interfaces, such as NFS. 
 
-Kubernetes handles creating the connection to the Volumes, at the pod level.
-Containers simply see a path pointing to the volume. 
+Kubernetes handles creating the connection to the Volumes at the pod level.
+Containers simply see a path in their filesystem pointing to the volume.
 
 Core Volume Types:
+   * [cephfs](#cephfs)
    * [configMap](#configmap)
    * [downwardAPI](#downwardapi)
    * [emptyDir](#emptydir)
@@ -95,23 +100,39 @@ Core Volume Types:
    * [iscsi](#iscsi)
    * [local](#local)
    * [nfs](#nfs)
-   * [persistentVolumeClaim](#persistentvolumeclaim)
    * [projected](#projected)
    * [rbd](#rbd)
    * [secret](#secret)
-   * [vsphereVolume](#vspherevolume)
 
-Plugin Types:
-  - CSI
-  - Flex Volume
-  - one more?
-  - persistent volume claim?
 
-External types of volumes:
+### Volume Plugin Interfaces
+
+Kubernetes implements the Container Storage Interface (CSI). CSI is the best
+way to communicate with out-of-tree plugins for externaly managed volumes. For example, AWS EBS or Azure
+Disk Storage. 
+
+*Out-of-tree* storage plugins are not part of the kubernetes binary. 
+
+`FlexVolume` is an older way to communicate with out of tree volume plugins. 
+
+   * CSI
+   * FlexVolume
+   * //TODO: unsure of where to put persistent volume claim -- is it a volume type?
+   * [persistentVolumeClaim](#persistentvolumeclaim) unsure.
+
+
+### External Volume Types
+
+The CSI was introduced to standardize connecting to externally managed
+volumes, such as cloud platform storage. 
+
+However, Kubernetes still includes many volume types for connecting to 
+specific cloud storage providers. 
+
+External Volume Types:
    * [awsElasticBlockStore](#awselasticblockstore)
    * [azureDisk](#azuredisk)
    * [azureFile](#azurefile)
-   * [cephfs](#cephfs)
    * [cinder](#cinder)
    * [flocker](#flocker)
    * [gcePersistentDisk](#gcepersistentdisk)
@@ -119,13 +140,172 @@ External types of volumes:
    * [quobyte](#quobyte)
    * [storageos](#storageos)
    * [scaleIO](#scaleio)
+   * [vsphereVolume](#vspherevolume)
+
+## Mount propagation
+
+Mount propagation allows for sharing volumes mounted by a Container to
+other Containers in the same Pod, or even to other Pods on the same node.
+
+Mount propagation of a volume is controlled by `mountPropagation` field in Container.volumeMounts.
+Its values are:
+
+ * `None` - This volume mount will not receive any subsequent mounts
+   that are mounted to this volume or any of its subdirectories by the host.
+   In similar fashion, no mounts created by the Container will be visible on
+   the host. This is the default mode.
+
+   This mode is equal to `private` mount propagation as described in the
+   [Linux kernel documentation](https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
+
+ * `HostToContainer` - This volume mount will receive all subsequent mounts
+   that are mounted to this volume or any of its subdirectories.
+
+   In other words, if the host mounts anything inside the volume mount, the
+   Container will see it mounted there.
+
+   Similarly, if any Pod with `Bidirectional` mount propagation to the same
+   volume mounts anything there, the Container with `HostToContainer` mount
+   propagation will see it.
+
+   This mode is equal to `rslave` mount propagation as described in the
+   [Linux kernel documentation](https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
+
+ * `Bidirectional` - This volume mount behaves the same the `HostToContainer` mount.
+   In addition, all volume mounts created by the Container will be propagated
+   back to the host and to all Containers of all Pods that use the same volume.
+
+   A typical use case for this mode is a Pod with a FlexVolume or CSI driver or
+   a Pod that needs to mount something on the host using a `hostPath` volume.
+
+   This mode is equal to `rshared` mount propagation as described in the
+   [Linux kernel documentation](https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
+
+{{< caution >}}
+`Bidirectional` mount propagation can be dangerous. It can damage
+the host operating system and therefore it is allowed only in privileged
+Containers. Familiarity with Linux kernel behavior is strongly recommended.
+In addition, any volume mounts created by Containers in Pods must be destroyed
+(unmounted) by the Containers on termination.
+{{< /caution >}}
+
+### Configuration
+Before mount propagation can work properly on some deployments (CoreOS,
+RedHat/Centos, Ubuntu) mount share must be configured correctly in
+Docker as shown below.
+
+Edit your Docker's `systemd` service file.  Set `MountFlags` as follows:
+```shell
+MountFlags=shared
+```
+Or, remove `MountFlags=slave` if present.  Then restart the Docker daemon:
+```shell
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+## Specifiy subPaths on Volumes
+
+Sometimes, it is useful to share one volume for multiple uses in a single Pod. The `volumeMounts.subPath`
+property can be used to specify a sub-path inside the referenced volume instead of its root.
+
+Here is an example of a Pod with a LAMP stack (Linux Apache Mysql PHP) using a single, shared volume.
+The HTML contents are mapped to its `html` folder, and the databases will be stored in its `mysql` folder:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-lamp-site
+spec:
+    containers:
+    - name: mysql
+      image: mysql
+      env:
+      - name: MYSQL_ROOT_PASSWORD
+        value: "rootpasswd"
+      volumeMounts:
+      - mountPath: /var/lib/mysql
+        name: site-data
+        subPath: mysql
+    - name: php
+      image: php:7.0-apache
+      volumeMounts:
+      - mountPath: /var/www/html
+        name: site-data
+        subPath: html
+    volumes:
+    - name: site-data
+      persistentVolumeClaim:
+        claimName: my-lamp-site-data
+```
+
+### Using subPath with expanded environment variables
+
+{{< feature-state for_k8s_version="v1.17" state="stable" >}}
+
+Use the `subPathExpr` field to construct `subPath` directory names from Downward API environment variables.
+The `subPath` and `subPathExpr` properties are mutually exclusive.
+
+In this example, a Pod uses `subPathExpr` to create a directory `pod1` within the hostPath volume `/var/log/pods`, using the pod name from the Downward API.  The host directory `/var/log/pods/pod1` is mounted at `/logs` in the container.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod1
+spec:
+  containers:
+  - name: container1
+    env:
+    - name: POD_NAME
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.name
+    image: busybox
+    command: [ "sh", "-c", "while [ true ]; do echo 'Hello'; sleep 10; done | tee -a /logs/hello.txt" ]
+    volumeMounts:
+    - name: workdir1
+      mountPath: /logs
+      subPathExpr: $(POD_NAME)
+  restartPolicy: Never
+  volumes:
+  - name: workdir1
+    hostPath:
+      path: /var/log/pods
+```
+
+## Core Volume Types
+
+### cephfs {#cephfs}
+
+A `cephfs` volume allows an existing CephFS volume to be
+mounted into your Pod. Unlike `emptyDir`, which is erased when a Pod is
+removed, the contents of a `cephfs` volume are preserved and the volume is merely
+unmounted.  This means that a CephFS volume can be pre-populated with data, and
+that data can be "handed off" between Pods.  CephFS can be mounted by multiple
+writers simultaneously.
+
+{{< caution >}}
+You must have your own Ceph server running with the share exported before you can use it.
+{{< /caution >}}
+
+See the [CephFS example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/cephfs/) for more details.
 
 ### configMap {#configmap}
 
 The [`configMap`](/docs/tasks/configure-pod-container/configure-pod-configmap/) resource
 provides a way to inject configuration data into Pods.
 The data stored in a `ConfigMap` object can be referenced in a volume of type
-`configMap` and then consumed by containerized applications running in a Pod.
+`configMap` and then consumed by containerized applications running in a Pod. 
+You must create a [ConfigMap](/docs/tasks/configure-pod-container/configure-pod-configmap/) 
+before you can use it.
+
+{{< caution >}}
+A Container using a ConfigMap as a [subPath](#using-subpath) volume mount will not
+receive ConfigMap updates.
+{{< /caution >}}
 
 When referencing a `configMap` object, you can simply provide its name in the
 volume to reference it. You can also customize the path to use for a specific
@@ -159,19 +339,7 @@ its `log_level` entry are mounted into the Pod at path "`/etc/config/log_level`"
 Note that this path is derived from the volume's `mountPath` and the `path`
 keyed with `log_level`.
 
-{{< caution >}}
-You must create a [ConfigMap](/docs/tasks/configure-pod-container/configure-pod-configmap/) before you can use it.
-{{< /caution >}}
-
-{{< note >}}
-A Container using a ConfigMap as a [subPath](#using-subpath) volume mount will not
-receive ConfigMap updates.
-{{< /note >}}
-
-{{< note >}}
 Text data is exposed as files using the UTF-8 character encoding. To use some other character encoding, use binaryData.
-{{< /note >}}
-
 
 ### downwardAPI {#downwardapi}
 
@@ -239,9 +407,7 @@ You can specify single or multiple target World Wide Names using the parameter
 `targetWWNs` in your volume configuration. If multiple WWNs are specified,
 targetWWNs expect that those WWNs are from multi-path connections.
 
-{{< caution >}}
 You must configure FC SAN Zoning to allocate and mask those LUNs (volumes) to the target WWNs beforehand so that Kubernetes hosts can access them.
-{{< /caution >}}
 
 See the [FC example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/fibre_channel) for more details.
 
@@ -288,9 +454,7 @@ means that a glusterfs volume can be pre-populated with data, and that data can
 be "handed off" between Pods.  GlusterFS can be mounted by multiple writers
 simultaneously.
 
-{{< caution >}}
 You must have your own GlusterFS installation running before you can use it.
-{{< /caution >}}
 
 See the [GlusterFS example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/glusterfs) for more details.
 
@@ -411,9 +575,7 @@ contents of an `iscsi` volume are preserved and the volume is merely
 unmounted.  This means that an iscsi volume can be pre-populated with data, and
 that data can be "handed off" between Pods.
 
-{{< caution >}}
 You must have your own iSCSI server running with the volume created before you can use it.
-{{< /caution >}}
 
 A feature of iSCSI is that it can be mounted as read-only by multiple consumers
 simultaneously.  This means that you can pre-populate a volume with your dataset
@@ -424,8 +586,6 @@ simultaneous writers allowed.
 See the [iSCSI example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/iscsi) for more details.
 
 ### local {#local}
-
-// TODO: compare to hostPath?
 
 {{< feature-state for_k8s_version="v1.14" state="stable" >}}
 
@@ -509,21 +669,11 @@ unmounted.  This means that an NFS volume can be pre-populated with data, and
 that data can be "handed off" between Pods.  NFS can be mounted by multiple
 writers simultaneously.
 
-{{< caution >}}
 You must have your own NFS server running with the share exported before you can use it.
-{{< /caution >}}
 
 See the [NFS example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/staging/volumes/nfs) for more details.
 
-### persistentVolumeClaim {#persistentvolumeclaim}
 
-A `persistentVolumeClaim` volume is used to mount a
-[PersistentVolume](/docs/concepts/storage/persistent-volumes/) into a Pod. PersistentVolumeClaims
-are a way for users to "claim" durable storage (such as a GCE PersistentDisk or an
-iSCSI volume) without knowing the details of the particular cloud environment.
-
-See the [PersistentVolumes example](/docs/concepts/storage/persistent-volumes/) for more
-details.
 
 ### projected {#projected}
 
@@ -538,12 +688,6 @@ Currently, the following types of volume sources can be projected:
 
 All sources are required to be in the same namespace as the Pod. For more details,
 see the [all-in-one volume design document](https://github.com/kubernetes/community/blob/{{< param "githubbranch" >}}/contributors/design-proposals/node/all-in-one-volume.md).
-
-The projection of service account tokens is a feature introduced in Kubernetes
-1.11 and promoted to Beta in 1.12.
-To enable this feature on 1.11, you need to explicitly set the `TokenRequestProjection`
-[feature gate](/docs/reference/command-line-tools-reference/feature-gates/) to
-True.
 
 #### Example Pod with a secret, a downward API, and a configmap.
 
@@ -626,7 +770,7 @@ parameters are nearly the same with two exceptions:
   volume source. However, as illustrated above, you can explicitly set the `mode`
   for each individual projection.
 
-When the `TokenRequestProjection` feature is enabled, you can inject the token
+You can inject the token
 for the current [service account](/docs/reference/access-authn-authz/authentication/#service-account-tokens)
 into a Pod at a specified path. Below is an example:
 
@@ -681,9 +825,7 @@ a `rbd` volume are preserved and the volume is merely unmounted.  This
 means that a RBD volume can be pre-populated with data, and that data can
 be "handed off" between Pods.
 
-{{< caution >}}
 You must have your own Ceph installation running before you can use RBD.
-{{< /caution >}}
 
 A feature of RBD is that it can be mounted as read-only by multiple consumers
 simultaneously.  This means that you can pre-populate a volume with your dataset
@@ -693,19 +835,13 @@ simultaneous writers allowed.
 
 See the [RBD example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/rbd) for more details.
 
-
-
 ### secret {#secret}
 
 A `secret` volume is used to pass sensitive information, such as passwords, to
 Pods.  You can store secrets in the Kubernetes API and mount them as files for
 use by Pods without coupling to Kubernetes directly.  `secret` volumes are
-backed by tmpfs (a RAM-backed filesystem) so they are never written to
+backed by tmpfs (a RAM-backed filesystem) so th ey are never written to
 non-volatile storage.
-
-{{< caution >}}
-You must create a secret in the Kubernetes API before you can use it.
-{{< /caution >}}
 
 {{< note >}}
 A Container using a Secret as a [subPath](#using-subpath) volume mount will not
@@ -717,84 +853,7 @@ Secrets are described in more detail [here](/docs/concepts/configuration/secret/
 
 
 
-## Using subPath
-
-Sometimes, it is useful to share one volume for multiple uses in a single Pod. The `volumeMounts.subPath`
-property can be used to specify a sub-path inside the referenced volume instead of its root.
-
-Here is an example of a Pod with a LAMP stack (Linux Apache Mysql PHP) using a single, shared volume.
-The HTML contents are mapped to its `html` folder, and the databases will be stored in its `mysql` folder:
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: my-lamp-site
-spec:
-    containers:
-    - name: mysql
-      image: mysql
-      env:
-      - name: MYSQL_ROOT_PASSWORD
-        value: "rootpasswd"
-      volumeMounts:
-      - mountPath: /var/lib/mysql
-        name: site-data
-        subPath: mysql
-    - name: php
-      image: php:7.0-apache
-      volumeMounts:
-      - mountPath: /var/www/html
-        name: site-data
-        subPath: html
-    volumes:
-    - name: site-data
-      persistentVolumeClaim:
-        claimName: my-lamp-site-data
-```
-
-### Using subPath with expanded environment variables
-
-{{< feature-state for_k8s_version="v1.17" state="stable" >}}
-
-
-Use the `subPathExpr` field to construct `subPath` directory names from Downward API environment variables.
-The `subPath` and `subPathExpr` properties are mutually exclusive.
-
-In this example, a Pod uses `subPathExpr` to create a directory `pod1` within the hostPath volume `/var/log/pods`, using the pod name from the Downward API.  The host directory `/var/log/pods/pod1` is mounted at `/logs` in the container.
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: pod1
-spec:
-  containers:
-  - name: container1
-    env:
-    - name: POD_NAME
-      valueFrom:
-        fieldRef:
-          apiVersion: v1
-          fieldPath: metadata.name
-    image: busybox
-    command: [ "sh", "-c", "while [ true ]; do echo 'Hello'; sleep 10; done | tee -a /logs/hello.txt" ]
-    volumeMounts:
-    - name: workdir1
-      mountPath: /logs
-      subPathExpr: $(POD_NAME)
-  restartPolicy: Never
-  volumes:
-  - name: workdir1
-    hostPath:
-      path: /var/log/pods
-```
-
-
-
-// TODO: introduce these better? plugins? out of tree?
-
-## Volume Plugins
+## Volume Plugin Interfaces
 
 The Out-of-tree volume plugins include the Container Storage Interface (CSI)
 and FlexVolume. They enable storage vendors to create custom storage plugins
@@ -944,70 +1003,19 @@ plugin path on each node (and in some cases master).
 Pods interact with FlexVolume drivers through the `flexvolume` in-tree plugin.
 More details can be found [here](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-storage/flexvolume.md).
 
-## Mount propagation
+### persistentVolumeClaim {#persistentvolumeclaim}
 
-Mount propagation allows for sharing volumes mounted by a Container to
-other Containers in the same Pod, or even to other Pods on the same node.
+//todo: expand?
 
-Mount propagation of a volume is controlled by `mountPropagation` field in Container.volumeMounts.
-Its values are:
+A `persistentVolumeClaim` volume is used to mount a
+[PersistentVolume](/docs/concepts/storage/persistent-volumes/) into a Pod. PersistentVolumeClaims
+are a way for users to "claim" durable storage (such as a GCE PersistentDisk or an
+iSCSI volume) without knowing the details of the particular cloud environment.
 
- * `None` - This volume mount will not receive any subsequent mounts
-   that are mounted to this volume or any of its subdirectories by the host.
-   In similar fashion, no mounts created by the Container will be visible on
-   the host. This is the default mode.
+See the [PersistentVolumes example](/docs/concepts/storage/persistent-volumes/) for more
+details.
 
-   This mode is equal to `private` mount propagation as described in the
-   [Linux kernel documentation](https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
-
- * `HostToContainer` - This volume mount will receive all subsequent mounts
-   that are mounted to this volume or any of its subdirectories.
-
-   In other words, if the host mounts anything inside the volume mount, the
-   Container will see it mounted there.
-
-   Similarly, if any Pod with `Bidirectional` mount propagation to the same
-   volume mounts anything there, the Container with `HostToContainer` mount
-   propagation will see it.
-
-   This mode is equal to `rslave` mount propagation as described in the
-   [Linux kernel documentation](https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
-
- * `Bidirectional` - This volume mount behaves the same the `HostToContainer` mount.
-   In addition, all volume mounts created by the Container will be propagated
-   back to the host and to all Containers of all Pods that use the same volume.
-
-   A typical use case for this mode is a Pod with a FlexVolume or CSI driver or
-   a Pod that needs to mount something on the host using a `hostPath` volume.
-
-   This mode is equal to `rshared` mount propagation as described in the
-   [Linux kernel documentation](https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
-
-{{< caution >}}
-`Bidirectional` mount propagation can be dangerous. It can damage
-the host operating system and therefore it is allowed only in privileged
-Containers. Familiarity with Linux kernel behavior is strongly recommended.
-In addition, any volume mounts created by Containers in Pods must be destroyed
-(unmounted) by the Containers on termination.
-{{< /caution >}}
-
-### Configuration
-Before mount propagation can work properly on some deployments (CoreOS,
-RedHat/Centos, Ubuntu) mount share must be configured correctly in
-Docker as shown below.
-
-Edit your Docker's `systemd` service file.  Set `MountFlags` as follows:
-```shell
-MountFlags=shared
-```
-Or, remove `MountFlags=slave` if present.  Then restart the Docker daemon:
-```shell
-sudo systemctl daemon-reload
-sudo systemctl restart docker
-```
 ## External Volume Providers
-
-// TODO: warning, migrate to plugins
 
 ### awsElasticBlockStore {#awselasticblockstore}
 
@@ -1111,21 +1119,6 @@ Storage Interface (CSI) Driver. In order to use this feature, the [Azure File CS
 Driver](https://github.com/kubernetes-sigs/azurefile-csi-driver)
 must be installed on the cluster and the `CSIMigration` and `CSIMigrationAzureFile`
 Alpha features must be enabled.
-
-### cephfs {#cephfs}
-
-A `cephfs` volume allows an existing CephFS volume to be
-mounted into your Pod. Unlike `emptyDir`, which is erased when a Pod is
-removed, the contents of a `cephfs` volume are preserved and the volume is merely
-unmounted.  This means that a CephFS volume can be pre-populated with data, and
-that data can be "handed off" between Pods.  CephFS can be mounted by multiple
-writers simultaneously.
-
-{{< caution >}}
-You must have your own Ceph server running with the share exported before you can use it.
-{{< /caution >}}
-
-See the [CephFS example](https://github.com/kubernetes/examples/tree/{{< param "githubbranch" >}}/volumes/cephfs/) for more details.
 
 ### cinder {#cinder}
 
