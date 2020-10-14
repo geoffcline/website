@@ -463,6 +463,7 @@ sudo apt-get install cri-o-1.17
 随后安装 CRI-O:
 
 ```shell
+sudo apt-get update
 sudo apt-get install cri-o-1.17
 ```
 
@@ -497,6 +498,7 @@ sudo apt-get install cri-o-1.17
 
 ```shell
 # 安装 CRI-O
+sudo apt-get update
 sudo apt-get install cri-o-1.17
 ```
 {{% /tab %}}
@@ -840,6 +842,36 @@ systemctl restart containerd
 # 重启 containerd
 systemctl restart containerd
 ```
+{{% /tab %}}
+
+{{% tab name="Windows/(PowerShell)" %}}
+
+```powershell
+# （安装 containerd ）
+# 下载 contianerd
+cmd /c curl -OL https://github.com/containerd/containerd/releases/download/v1.4.0-beta.2/containerd-1.4.0-beta.2-windows-amd64.tar.gz
+cmd /c tar xvf .\containerd-1.4.0-beta.2-windows-amd64.tar.gz
+```
+
+```powershell
+# 添加开机启动
+Copy-Item -Path ".\bin\" -Destination "C:\Program Files\containerd" -Recurse -Force
+cd C:\Program Files\containerd\
+.\containerd.exe config default | Out-File config.toml -Encoding ascii
+
+# 检查配置文件主要看以下三个参数
+# sandbox_image 的镜像地址
+# CNI 的 bin_dir 和 conf_dir 路径
+Get-Content config.toml
+```
+
+```powershell
+# containerd 注册服务
+.\containerd.exe --register-service
+# 启动 containerd
+Start-Service containerd
+```
+
 {{% /tab %}}
 {{< /tabs >}}
 
