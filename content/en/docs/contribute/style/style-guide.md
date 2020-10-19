@@ -49,17 +49,16 @@ When you refer specifically to interacting with an API object, use [UpperCamelCa
 Don't split the API object name into separate words. For example, use
 PodTemplateList, not Pod Template List.
 
-Refer to API objects without saying "object," unless omitting "object"
-leads to an awkward construction.
+There is a subtle distinction between formal API objects and general concepts. Use "object" where approrpiate to carify the meaning of terms. Calling out a "Pod object" may be appropriate when moving from general concepts to specific API objects. For example, "Pods may have multiple volume mounts. The Pod object includes a Volumes field."
+
+Do not use "object" repetitively, such as where it's clear a term is an API object. 
+
+Note that capitalization is a weak way to signal information to the reader. This information may be lost entirely due to assistive technology, differences in visual abilities, or translation. 
 
 {{< table caption = "Do and Don't - API objects" >}}
 Do | Don't
 :--| :-----
-The pod has two containers. | The Pod has two containers.
-The HorizontalPodAutoscaler is responsible for ... | The HorizontalPodAutoscaler object is responsible for ...
 A PodList is a list of pods. | A Pod List is a list of pods.
-The two ContainerPorts ... | The two ContainerPort objects ...
-The two ContainerStateTerminated objects ... | The two ContainerStateTerminateds ...
 {{< /table >}}
 
 
